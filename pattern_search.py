@@ -1,8 +1,9 @@
-from sequence_processing import reverse_complement
+from sequence_processing import complement
 
 
 def hamming_distance(s1: str, s2: str) -> int:
-    assert len(s1) == len(s2), "Strings have different lengths"
+    if len(s1) != len(s2):
+        raise ValueError("input strings must be the same length")
     res = 0
     for i in range(len(s1)):
         if s1[i] != s2[i]:
@@ -13,6 +14,8 @@ def hamming_distance(s1: str, s2: str) -> int:
 def neighbours(dna: str, d: int) -> dict[str: int]:
     if d == 0:
         return {dna: 0}
+    if d < 0:
+        raise ValueError("d must be non-negative")
     if len(dna) == 1:
         return {"A": 1, "T": 1, "G": 1, "C": 1, dna: 0}
 
@@ -46,7 +49,7 @@ def frequent_k_mers(text: str, k: int, freq_threshold=0, mismatches=0,
             freq_dict[neighbor] = freq_dict.setdefault(neighbor, 0) + 1
             highest_frequency = max(highest_frequency, freq_dict[neighbor])
             if reverse_complementary:
-                rc_neighbor = reverse_complement(neighbor)
+                rc_neighbor = complement(neighbor)
                 freq_dict[rc_neighbor] = freq_dict.setdefault(rc_neighbor, 0) + 1
                 highest_frequency = max(highest_frequency, freq_dict[rc_neighbor])
     res = []
