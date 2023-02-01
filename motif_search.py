@@ -1,3 +1,5 @@
+import copy
+import random
 from scipy.stats import entropy
 
 
@@ -14,6 +16,9 @@ class MotifMatrix:
         self._compute_profile()
         self._compute_consensus()
 
+    def __eq__(self, other):
+        return self._motifs == other.get_motifs()
+
     def _compute_profile(self):
         self._profile = [{c: 0 for c in 'ATGC'} for _ in range(self._length)]
         for seq in self._motifs:
@@ -26,45 +31,49 @@ class MotifMatrix:
             res.append(max(self._profile[pos], key=self._profile[pos].get))
         self._consensus = ''.join(res)
 
-    def extend(self, motif: str):
+    def extend(self, motif: str, index: int = None):
         if len(motif) != self._length:
             raise ValueError('the motif string must be the same length as the motif matrix')
+        motif = motif.upper()
+        if index is None:
+            index = self._height
+        self._motifs.insert(index, motif)
         self._height += 1
-        self._motifs.append(motif.upper())
-        new_consensus = []
         for pos in range(self._length):
-            profile_col = self._profile[pos]
-            profile_col[self._motifs[-1][pos]] += 1
-            if profile_col[self._motifs[-1][pos]] > profile_col[self._consensus[pos]]:
-                new_consensus.append(self._motifs[-1][pos])
-            else:
-                new_consensus.append(self._consensus[pos])
-        self._consensus = ''.join(new_consensus)
+            self._profile[pos][motif[pos]] += 1
+        self._compute_consensus()
 
-    def likelihood(self, seq: str, smooth=True) -> float:
-        if self._length != len(seq):
+    def reduce(self, index: int):
+        motif = self._motifs.pop(index)
+        self._height -= 1
+        for pos in range(self._length):
+            self._profile[pos][motif[pos]] -= 1
+        self._compute_consensus()
+
+    def likelihood(self, seq: str, smooth=True):
+        if len(seq) < self._length:
             return 0.0
-        res = 1.0
-        for pos in range(self._length):
-            if smooth:
-                res *= self._profile[pos][seq[pos]] + 1
-            else:
-                res *= self._profile[pos][seq[pos]]
-        if smooth:
-            res /= (self._height + 4) ** self._length
-        else:
-            res /= self._height ** self._length
-        return res
-
-    def max_likelihood(self, seq: str, smooth=True) -> (str, int, float):
-        best_likelihood = 0.0
-        best_start_pos = 0
+        likelihoods = []
         for start_pos in range(len(seq) - self._length + 1):
-            likelihood = self.likelihood(seq[start_pos: start_pos + self._length], smooth)
-            if likelihood > best_likelihood:
-                best_likelihood = likelihood
-                best_start_pos = start_pos
-        return seq[best_start_pos: best_start_pos + self._length], best_start_pos, best_likelihood
+            res = 1.0
+            for pos in range(self._length):
+                if smooth:
+                    res *= self._profile[pos][seq[start_pos + pos]] + 1
+                else:
+                    res *= self._profile[pos][seq[start_pos + pos]]
+            if smooth:
+                res /= (self._height + 4) ** self._length
+            else:
+                res /= self._height ** self._length
+            likelihoods.append(res)
+        return likelihoods if len(likelihoods) > 1 else likelihoods[0]
+
+    def most_likelihood(self, seq: str, smooth=True) -> (str, int, float):
+        if len(seq) <= self._length:
+            return seq, 0, float(self.likelihood(seq, smooth=smooth))
+        likelihoods = self.likelihood(seq, smooth=smooth)
+        best_pos = int(max(range(len(likelihoods)), key=lambda i: likelihoods[i]))
+        return seq[best_pos: best_pos + self._length], best_pos, likelihoods[best_pos]
 
     def score(self, mod='count') -> int | float:
         res = 0
@@ -88,16 +97,62 @@ class MotifMatrix:
         return self._consensus
 
 
-def greedy_motif_search(seqs: list[str], length: int, smooth=True) -> MotifMatrix:
+def greedy_motif_search(seqs: list[str], length: int, smooth=True, scoring='entropy') -> MotifMatrix:
     best_motifs = MotifMatrix([seq[:length] for seq in seqs])
     for pos in range(len(seqs[0]) - length + 1):
         cur_motifs = MotifMatrix([seqs[0][pos: pos + length]])
         for i in range(1, len(seqs)):
-            motif, *_ = cur_motifs.max_likelihood(seqs[i], smooth)
+            motif, *_ = cur_motifs.most_likelihood(seqs[i], smooth)
             cur_motifs.extend(motif)
-        if cur_motifs.score() < best_motifs.score():
+        if cur_motifs.score(mod=scoring) < best_motifs.score(mod=scoring):
             best_motifs = cur_motifs
     return best_motifs
+
+
+def randomized_motif_search(seqs: list[str],
+                            length: int,
+                            smooth=True,
+                            scoring='entropy',
+                            max_steps=200) -> (MotifMatrix, int | float):
+    init_pos = [random.randrange(len(seq) - length + 1) for seq in seqs]
+    M = MotifMatrix([seq[pos: pos + length] for seq, pos in zip(seqs, init_pos)])
+    best_score = float('inf')
+    best_M = M
+    for _ in range(max_steps):
+        new_M = MotifMatrix([M.most_likelihood(seq, smooth)[0] for seq in seqs])
+        new_score = new_M.score(mod=scoring)
+        if new_score < best_score:
+            best_score = new_score
+            best_M = M = new_M
+        elif new_score == best_score and M == new_M:
+            break
+        else:
+            M = new_M
+    return best_M, best_score
+
+
+def gibbs_motif_search(seqs: list[str],
+                       length: int,
+                       smooth=True,
+                       scoring='entropy',
+                       max_steps=2000) -> (MotifMatrix, int | float):
+    seqs_num = len(seqs)
+    init_pos = [random.randrange(len(seq) - length + 1) for seq in seqs]
+    M = MotifMatrix([seq[pos: pos + length] for seq, pos in zip(seqs, init_pos)])
+    best_score = float('inf')
+    best_M = copy.deepcopy(M)
+    for _ in range(max_steps):
+        row_for_change = random.randrange(seqs_num)
+        M.reduce(row_for_change)
+        probs = M.likelihood(seqs[row_for_change], smooth=smooth)
+        new_pos = random.choices(range(len(probs)), weights=probs, k=1)[0]
+        new_motif = seqs[row_for_change][new_pos: new_pos + length]
+        M.extend(new_motif, row_for_change)
+        new_score = M.score(mod=scoring)
+        if new_score < best_score:
+            best_score = new_score
+            best_M = copy.deepcopy(M)
+    return best_M, best_score
 
 
 if __name__ == '__main__':
